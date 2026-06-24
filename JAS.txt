@@ -1,0 +1,91 @@
+The Cloud-Native AI Job Agent: Complete System Architecture
+1. The Core Problem Statement
+The modern job application ecosystem is hostile to job seekers.
+1. The Volume Problem: Hundreds of relevant jobs/internships are posted daily across fragmented platforms (LinkedIn, Wellfound, Internshala, Workday, direct company sites). Manually monitoring them is a 20+ hour/week task.
+2. The Generic Resume Penalty: Applicant Tracking Systems (ATS) ruthlessly filter out generic resumes. To pass, a resume must be dynamically tailored to include the specific keywords and tech stack mentioned in the Job Description (JD).
+3. The Bot-Defense Wall: Traditional automation (web scrapers checking LinkedIn every hour) no longer works. Companies use Cloudflare, Datadome, and CAPTCHAs to instantly ban IP addresses and accounts exhibiting bot-like behavior.
+4. The "Black Hole" Form: Filling out the same Workday or Greenhouse form 50 times a day is soul-crushing repetitive data entry.
+The Solution: A fully autonomous, cloud-hosted Python agent that bypasses web scrapers by intercepting email job alerts, uses mathematical embeddings to cheaply filter noise, uses an advanced LLM (Gemini 2.5 Flash) to rewrite resumes via LaTeX, and uses Playwright to auto-apply to standard ATS forms—all controlled by the user via a 1-tap Telegram chat interface.
+2. Strict System Constraints & Workarounds
+* The Ingestion Constraint (Zero-Ban Tolerance): * Constraint: Direct scraping of job boards triggers account bans.
+o Workaround: The "Inbox Interceptor." The agent will only read a dedicated Gmail inbox. We outsource the job discovery to LinkedIn/Wellfound's own alert systems.
+* The Financial Constraint (Token Economy): * Constraint: Sending 1,000 job descriptions a week to an LLM costs too much money.
+o Workaround: Two-stage filtering. Stage 1 uses free, local vector embeddings to calculate a "math score." Only jobs passing Stage 1 (top 5%) go to Stage 2 (the LLM) for deep semantic evaluation.
+* The Execution Constraint (The ATS Variance): * Constraint: AI cannot reliably fill out 100% of custom forms (e.g., a highly custom Workday portal requiring account creation).
+o Workaround: The "Graceful Fallback." The Playwright bot will contain logic modules for standard, easy ATS systems (Greenhouse, Lever, Ashby, forms without auth). If it detects a complex unsupported ATS, it aborts the auto-apply and sends the user a manual link.
+3. Deep-Dive Tech Stack
+* Server Engine: FastAPI (Python 3.11). Hosted on Render/Railway. FastAPI is asynchronous, meaning it can listen for Telegram messages instantly while a heavy Playwright browser runs in the background.
+* Database Engine: Supabase (PostgreSQL).
+o Uses pgvector extension for storing and querying text embeddings.
+o Tables: jobs_found, applications_tracked, user_profile (stores your baseline resume data).
+* The AI Brain: Google Gemini 2.5 Flash API. Chosen for its massive context window (can read a 3-page JD and your full resume instantly) and highly structured JSON output.
+* The Auto-Applier: Playwright (Python). A headless browser automation library. It is faster and more reliable than Selenium. It interacts directly with the website's DOM (Document Object Model) to type text and upload files.
+* Document Engine: Jinja2 + Tectonic (or pdflatex). Jinja2 injects AI-generated bullet points into a pre-designed .tex file, and Tectonic compiles it into an ATS-readable PDF within milliseconds.
+* User Interface: Telegram Bot API using the aiogram async library. Uses InlineKeyboardMarkup to provide clickable [Apply] and [Skip] buttons within the chat.
+4. The Complete 6-Phase Execution Workflow
+Phase 1: Ingestion (The Inbox Interceptor)
+* Trigger: A background task runs every 4 hours (AsyncIOScheduler).
+* Action: Connects to yourname.jobs@gmail.com via IMAP.
+* Extraction: Scans for unread emails from alerts@linkedin.com or noreply@wellfound.com. It parses the HTML MIME body using BeautifulSoup to extract the raw Job URL. It marks the email as "Read".
+Phase 2: Stage-1 Pre-Filtering (The Math Gate)
+* Action: The script visits the extracted Job URL, pulls the raw text of the Job Description (JD).
+* Deduplication: Hashes the URL. Checks Supabase jobs_found table. If it exists, abort.
+* Embedding Calculation: Converts the JD into a 384-dimensional number array using the all-MiniLM-L6-v2 local model.
+* Cosine Similarity Check: Calculates the distance between the JD embedding and your pre-stored Resume embedding.
+* Gate: If Similarity < 0.65 (e.g., job requires 5 years exp, or wrong tech stack), log as "Rejected - Low Match" and halt. Cost: $0.00.
+Phase 3: Stage-2 Deep Evaluation & Tailoring (The AI Gate)
+* Action: Surviving jobs are packaged into a prompt for Gemini 2.5 Flash:
+o "Role: Expert Tech Recruiter. Input: Job Description + Candidate Base Resume. Task 1: Evaluate eligibility strictly (intern/junior level only, no clearance required). Task 2: If eligible, rewrite 3 resume bullet points to mirror JD keywords without lying. Output: JSON format."
+* Document Generation: Python receives the JSON. It maps the new bullet points into resume_template.tex. It runs a shell command to compile Candidate_Resume_Tailored.pdf.
+Phase 4: The Telegram Checkpoint (Human-in-the-Loop)
+* Action: FastAPI sends a message via Telegram Webhook.
+* Payload: Job Title, Company, Match Score, 1-sentence reason for match, and the attached Candidate_Resume_Tailored.pdf.
+* UI: Attaches an inline keyboard with two buttons: [?? Auto-Apply] and [? Skip].
+Phase 5: The Auto-Applier (Playwright Execution)
+* Trigger: User taps [?? Auto-Apply] on Telegram.
+* Action: FastAPI receives the callback query. It spawns an async Playwright chromium browser.
+* Website Interaction:
+1. Navigates to the application URL.
+2. Scans the DOM for standard ATS signatures (e.g., meta content="Greenhouse").
+3. Uses CSS selectors to fill the form: page.fill('input[name="first_name"]', "John").
+4. Uploads the generated PDF: page.set_input_files('input[type="file"]', 'Candidate_Resume_Tailored.pdf').
+5. Uses Gemini dynamically to answer random text boxes (e.g., "Why do you want to work here?").
+6. Submits form. Takes a screenshot of the "Success" page.
+* Feedback: Sends the screenshot back to Telegram: "? Application successful." Updates Supabase table to status: APPLIED.
+Phase 6: Daily Analytics Digest
+* Trigger: Cron job at 21:00 (9:00 PM) daily.
+* Action: Queries Supabase: SELECT count(*) FROM jobs_found WHERE created_at > TODAY().
+* Feedback: Sends a formatted Telegram message summarizing the day's activity.
+5. A 48-Hour Narrative Example
+Day 1: Tuesday
+* 08:00 AM (Background Ingestion): * The FastAPI server wakes up its IMAP worker. It finds 8 new LinkedIn digest emails containing 40 total jobs.
+o It extracts the 40 URLs and scrapes the text.
+o Vector Filter: 35 jobs are instantly rejected (Senior roles, irrelevant frameworks).
+o LLM Filter: The 5 remaining jobs go to Gemini. Gemini rejects 4 (one requires a Master's degree, three are US-citizens only).
+o The Survivor: 1 job passes: Backend Software Engineer Intern @ Vercel (Greenhouse ATS). Gemini compiles the tailored PDF.
+* 08:05 AM (The Interaction): * Your phone buzzes.
+o Bot Message: > ? New Match: Backend Intern at Vercel
+?? Score: 94% ?? AI Notes: Heavy focus on Next.js and API routing. I have tailored your side-project bullet points to emphasize your API architecture experience. ?? Attached: Vercel_Tailored_CV.pdf [?? Auto-Apply] | [? Skip]
+* 08:30 AM (The Decision): * You wake up, check Telegram, read the PDF, and tap [?? Auto-Apply].
+* 08:30:02 AM (Website Interaction): * Playwright opens boards.greenhouse.io/vercel/intern.
+o It maps your JSON profile to the DOM. It types your Name, Email, Phone.
+o It finds a dropdown: "Will you now or in the future require sponsorship?" -> It selects "No".
+o It uploads Vercel_Tailored_CV.pdf to the file input.
+o It clicks <button id="submit_app">.
+o It detects the "Thank you for applying" DOM element.
+* 08:31 AM (Confirmation): * Bot Message: > ? Success! Application submitted to Vercel. Database logged.
+* 09:00 PM (Daily Digest):
+o Bot Message: > ?? Daily Digest: > Jobs Scanned: 40 | Relevant: 1 | Applied: 1
+You saved approx 1 hour of manual hunting today.
+Day 2: Wednesday
+* 04:00 AM (The Night Shift):
+o An alert from Wellfound hits the inbox: Software Intern @ Stealth Startup.
+o Perfect match. Gemini drafts a custom cover letter citing the startup's specific AI focus mentioned in the JD.
+* 08:00 AM:
+o You wake up to the Telegram notification.
+o Bot Message: > ? New Match: Software Intern at Stealth Startup
+?? Notice: This application is hosted on Workday (Custom Auth required). ?? Attached: Stealth_Tailored_CV.pdf ?? Attached: Custom_Cover_Letter.txt [?? Apply Manually Here] | [? Dismiss]
+o Note: The bot recognized the complex Workday URL and gracefully degraded to giving you the tailored materials to apply manually, saving you the frustration of a broken bot.
+* 08:15 AM: You tap the manual link, paste the generated cover letter, upload the PDF, and apply. You tap [? Dismiss] to clear it from your queue.
+End of Architecture Document
+

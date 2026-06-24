@@ -1,0 +1,110 @@
+%% resume_template.tex — ATS-optimized single-column resume template
+%% Uses Jinja2 with LaTeX-safe delimiters (\VAR{}, \BLOCK{}, \#{})
+\documentclass[11pt, letterpaper]{article}
+
+%% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=0.65in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{tabularx}
+
+%% ── Page Setup ────────────────────────────────────────────────────────────────
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+
+%% ── Section Formatting ───────────────────────────────────────────────────────
+\titleformat{\section}
+  {\Large\bfseries\scshape\raggedright}
+  {}{0em}
+  {}
+  [\titlerule]
+\titlespacing*{\section}{0pt}{6pt}{4pt}
+
+%% ── List Formatting ──────────────────────────────────────────────────────────
+\setlist[itemize]{nosep, left=0pt..1.5em, label=\textbullet}
+
+%% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+
+%% ── Header ────────────────────────────────────────────────────────────────────
+\begin{center}
+  {\LARGE\bfseries \VAR{name}}\\[4pt]
+  \VAR{email}
+  \BLOCK{if phone} $|$ \VAR{phone}\BLOCK{endif}
+  \BLOCK{if linkedin_url} $|$ \href{\VAR{linkedin_url}}{LinkedIn}\BLOCK{endif}
+  \BLOCK{if github_url} $|$ \href{\VAR{github_url}}{GitHub}\BLOCK{endif}
+  \BLOCK{if portfolio_url} $|$ \href{\VAR{portfolio_url}}{Portfolio}\BLOCK{endif}
+\end{center}
+
+%% ── Education ─────────────────────────────────────────────────────────────────
+\BLOCK{if education}
+\section{Education}
+\BLOCK{for edu in education}
+\textbf{\VAR{edu.institution}} \hfill \VAR{edu.dates}\\
+\textit{\VAR{edu.degree}}
+\BLOCK{if edu.gpa} \hfill GPA: \VAR{edu.gpa}\BLOCK{endif}
+\BLOCK{if not loop.last}\\[4pt]\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+%% ── Experience ────────────────────────────────────────────────────────────────
+\BLOCK{if experience}
+\section{Experience}
+\BLOCK{for job in experience}
+\textbf{\VAR{job.title}} --- \VAR{job.company} \hfill \VAR{job.dates}
+\begin{itemize}
+  \BLOCK{for bullet in job.bullets}
+  \item \VAR{bullet}
+  \BLOCK{endfor}
+\end{itemize}
+\BLOCK{if not loop.last}\vspace{2pt}\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+%% ── Tailored Highlights ──────────────────────────────────────────────────────
+\BLOCK{if tailored_bullets}
+\section{Key Highlights}
+\begin{itemize}
+  \BLOCK{for bullet in tailored_bullets}
+  \item \VAR{bullet}
+  \BLOCK{endfor}
+\end{itemize}
+\BLOCK{endif}
+
+%% ── Projects ──────────────────────────────────────────────────────────────────
+\BLOCK{if projects}
+\section{Projects}
+\BLOCK{for proj in projects}
+\textbf{\VAR{proj.name}}
+\BLOCK{if proj.tech_stack} {\small| \textit{\VAR{proj.tech_stack}}}\BLOCK{endif}
+\BLOCK{if proj.description}\\
+\VAR{proj.description}
+\BLOCK{endif}
+\BLOCK{if proj.bullets}
+\begin{itemize}
+  \BLOCK{for bullet in proj.bullets}
+  \item \VAR{bullet}
+  \BLOCK{endfor}
+\end{itemize}
+\BLOCK{endif}
+\BLOCK{if not loop.last}\vspace{2pt}\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+%% ── Skills ────────────────────────────────────────────────────────────────────
+\BLOCK{if skills}
+\section{Technical Skills}
+\begin{tabularx}{\textwidth}{@{} >{\bfseries}l X @{}}
+  \BLOCK{for category, items in skills.items()}
+  \VAR{category}: & \VAR{items | join(', ')} \\
+  \BLOCK{endfor}
+\end{tabularx}
+\BLOCK{endif}
+
+\end{document}
