@@ -14,7 +14,7 @@ from src.filtering.embedding_engine import EmbeddingEngine
 from src.filtering.math_gate import MathGate
 from src.filtering.title_gate import passes_title_gate
 from src.ingestion.active_crawler import ActiveDiscoveryEngine
-from src.ingestion.jd_scraper import JdScraper
+from src.ingestion.jd_scraper import JdScraper, _detect_ats
 
 logger = logging.getLogger(__name__)
 
@@ -139,21 +139,19 @@ class PipelineOrchestrator:
                     # 4. Math Gate
                     math_result = await self.math_gate.evaluate(jd_text, resume_embedding)
 
+                    detected_ats = _detect_ats(raw_job.url)
+                    platform_name = detected_ats if detected_ats != "unknown" else raw_job.platform
+
                     job_data = {
                         "url_hash": hashlib.sha256(raw_job.url.encode()).hexdigest(),
                         "url": raw_job.url,
                         "title": raw_job.title,
                         "company": raw_job.company,
                         "location": raw_job.location,
-                        "platform": raw_job.platform,
+                        "platform": platform_name,
                         "jd_text": jd_text,
                         "jd_embedding": jd_embedding,
                         "cosine_score": math_result.score,
-                        "ats_type": (
-                            raw_job.platform
-                            if raw_job.platform in ["greenhouse", "lever", "ashby"]
-                            else "unknown"
-                        )
                     }
 
                     if not math_result.passed:
@@ -242,6 +240,8 @@ class PipelineOrchestrator:
                     await self.db.update_job_status(job_id, "PENDING_USER")
 
                     if self.send_notification:
+                        platform_val = job.get("platform", "unknown")
+                        ats_supported = platform_val in ["greenhouse", "lever", "ashby"]
                         notification_data = {
                             "job_id": job_id,
                             "title": job.get("title", "Position"),
@@ -249,11 +249,11 @@ class PipelineOrchestrator:
                             "location": job.get("location", "Remote"),
                             "score": job.get("llm_score", 0),
                             "reasoning": job.get("llm_reasoning", ""),
-                            "ats_type": job.get("ats_type", "unknown"),
+                            "ats_type": platform_val,
                             "url": job.get("url", ""),
                             "pdf_path": job.get("tailored_resume_path"),
                             "cover_letter_path": job.get("cover_letter_path"),
-                            "ats_supported": True,
+                            "ats_supported": ats_supported,
                         }
                         await self.send_notification(notification_data)
                     stats["released_staged"] += 1
