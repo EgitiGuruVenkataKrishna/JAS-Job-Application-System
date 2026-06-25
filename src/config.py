@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     cover_letter_score_threshold: int = 90
 
     # --- Scheduling ---
-    ingestion_interval_hours: int = 4
-    digest_hour: int = 21
+    ingestion_interval_hours: int = 3
+    digest_hour: int = 8
 
     # --- Output Paths ---
     output_dir: str = "output"

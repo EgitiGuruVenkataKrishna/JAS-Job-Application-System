@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 def setup_scheduler(
     pipeline_callback: Callable[[], Coroutine[Any, Any, None]],
     digest_callback: Callable[[], Coroutine[Any, Any, None]],
+    hourly_hunt_callback: Callable[[], Coroutine[Any, Any, None]] | None = None,
 ) -> AsyncIOScheduler:
     """Create, configure, and start the async scheduler.
 
@@ -29,26 +30,28 @@ def setup_scheduler(
     ----------
     pipeline_callback:
         Async callable invoked every ``settings.ingestion_interval_hours``
-        to run the full ingestion pipeline.
+        to run the release & sync pipeline.
     digest_callback:
-        Async callable invoked daily at ``settings.digest_hour`` (UTC) to
+        Async callable invoked daily at ``settings.digest_hour`` (local time) to
         send the daily job digest.
+    hourly_hunt_callback:
+        Optional async callable invoked every 1 hour to crawl trusted platforms silently.
 
     Returns
     -------
     AsyncIOScheduler
-        A *started* scheduler instance.  The caller is responsible for
-        keeping the event loop alive.
+        A *started* scheduler instance.
     """
     settings = get_settings()
-    scheduler = AsyncIOScheduler(timezone="UTC")
+    # Uses local timezone to trigger daily digest at exact local hour
+    scheduler = AsyncIOScheduler()
 
-    # --- Ingestion job: every N hours ---
+    # --- Ingestion job: every N hours (default 3) ---
     scheduler.add_job(
         pipeline_callback,
         trigger=IntervalTrigger(hours=settings.ingestion_interval_hours),
         id="ingestion_pipeline",
-        name="Ingestion Pipeline",
+        name="Ingestion Pipeline (Release & Sync)",
         replace_existing=True,
         max_instances=1,
     )
@@ -57,7 +60,19 @@ def setup_scheduler(
         settings.ingestion_interval_hours,
     )
 
-    # --- Digest job: daily at configured hour ---
+    # --- Hourly Hunt job: every 1 hour ---
+    if hourly_hunt_callback is not None:
+        scheduler.add_job(
+            hourly_hunt_callback,
+            trigger=IntervalTrigger(hours=1),
+            id="hourly_hunt",
+            name="Hourly Hunt (Staging)",
+            replace_existing=True,
+            max_instances=1,
+        )
+        logger.info("Scheduled hourly hunt pipeline — every 1 hour.")
+
+    # --- Digest job: daily at configured hour (local time) ---
     scheduler.add_job(
         digest_callback,
         trigger=CronTrigger(hour=settings.digest_hour, minute=0),
@@ -67,7 +82,7 @@ def setup_scheduler(
         max_instances=1,
     )
     logger.info(
-        "Scheduled daily digest — every day at %02d:00 UTC.",
+        "Scheduled daily digest — every day at %02d:00 local time.",
         settings.digest_hour,
     )
 

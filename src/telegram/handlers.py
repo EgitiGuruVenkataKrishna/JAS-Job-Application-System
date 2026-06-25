@@ -441,6 +441,195 @@ def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return ""
 
 
+@router.message(F.text.regexp(r"https?://[^\s]+"))
+async def handle_job_url(message: Message) -> None:
+    """Directly process a job URL sent by the user."""
+    # Find the URL in the text
+    import re
+    match = re.search(r"https?://[^\s]+", message.text or "")
+    if not match:
+        return
+    url = match.group(0)
+
+    db = _get_db()
+    if db is None:
+        await message.answer("⚠️ Database client unavailable — cannot process URLs.")
+        return
+
+    # 1. Fetch user profile
+    try:
+        user_profile = await db.get_user_profile()
+    except Exception:
+        logger.exception("Failed to fetch user profile")
+        user_profile = None
+
+    if not user_profile or not user_profile.get("resume_embedding"):
+        await message.answer("⚠️ Please upload your resume first using /update_resume before submitting job links.")
+        return
+
+    # 2. Inform user and start scraping
+    status_msg = await message.answer(f"🔍 <b>Scraping job details...</b>\nURL: {url}")
+
+    from src.ingestion.jd_scraper import JdScraper
+    scraper = JdScraper()
+    scraped = await scraper.scrape(url)
+
+    if not scraped or not scraped.jd_text.strip():
+        # Scraping failed (probably bot protection or login wall like LinkedIn/Indeed)
+        await status_msg.delete()
+        
+        # Save placeholder in DB so user can log as manual or dismiss
+        import hashlib
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        
+        placeholder_data = {
+            "url_hash": url_hash,
+            "title": "Blocked/Secured Job Link",
+            "company": "External Site",
+            "location": "Remote / Onsite",
+            "url": url,
+            "platform": "unknown",
+            "jd_text": "Could not extract details due to anti-bot securities or login wall.",
+            "cosine_score": 0.0,
+            "llm_score": 0,
+            "llm_reasoning": "Bot security or login wall blocked automated content extraction.",
+            "status": "PENDING_USER"
+        }
+        
+        job_id = None
+        try:
+            existing = await db.client.table("jobs_found").select("id").eq("url_hash", url_hash).execute()
+            if existing.data:
+                job_id = existing.data[0]["id"]
+                await db.client.table("jobs_found").update(placeholder_data).eq("id", job_id).execute()
+            else:
+                res = await db.client.table("jobs_found").insert(placeholder_data).execute()
+                if res.data:
+                    job_id = res.data[0]["id"]
+        except Exception:
+            logger.exception("Failed to save placeholder job to DB")
+
+        text = (
+            f"🔒 <b>Anti-Bot Security or Login Wall Detected</b>\n\n"
+            f"JAS could not scrape the job details automatically from this website.\n\n"
+            f"🔗 <b>Direct Link:</b> {url}"
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📝 Log Manual Apply", callback_data=f"manual_{job_id or 'unknown'}"),
+                InlineKeyboardButton(text="🗑 Dismiss", callback_data=f"dismiss_{job_id or 'unknown'}")
+            ]
+        ])
+        await message.answer(text, reply_markup=keyboard)
+        return
+
+    # 3. Scraping succeeded, evaluate fit
+    try:
+        await status_msg.edit_text("📐 <b>Evaluating match score...</b>")
+        
+        from src.filtering.math_gate import MathGate
+        from src.filtering.ai_gate import AiGate
+        
+        # Math gate
+        global _embedding_engine_instance
+        if _embedding_engine_instance is None:
+            from src.filtering.embedding_engine import EmbeddingEngine
+            _embedding_engine_instance = EmbeddingEngine()
+            
+        math_gate = MathGate(embedding_engine=_embedding_engine_instance)
+        math_res = await math_gate.evaluate(scraped.jd_text, user_profile["resume_embedding"])
+        
+        # AI gate
+        ai_gate = AiGate()
+        ai_res = await ai_gate.evaluate(scraped.jd_text, user_profile["resume_json"])
+        
+        # 4. Generate tailored resume & cover letter
+        await status_msg.edit_text("📄 <b>Compiling tailored resume...</b>")
+        
+        from src.documents.generator import DocumentGenerator
+        doc_gen = DocumentGenerator()
+        
+        # Compile resume (always)
+        pdf_path = await doc_gen.generate_resume(
+            resume_data=user_profile,
+            tailored_bullets=ai_res.tailored_bullets,
+            company=scraped.company
+        )
+        
+        # Compile cover letter if score >= 90
+        cover_letter_path = None
+        if ai_res.score >= 90:
+            from src.documents.cover_letter_generator import CoverLetterGenerator
+            cl_gen = CoverLetterGenerator()
+            cover_letter_path = await cl_gen.generate(
+                jd_text=scraped.jd_text,
+                resume_json=user_profile,
+                company=scraped.company,
+                title=scraped.title
+            )
+            
+        # 5. Save to database
+        import hashlib
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        
+        job_data = {
+            "url_hash": url_hash,
+            "title": scraped.title,
+            "company": scraped.company,
+            "location": scraped.location,
+            "url": url,
+            "platform": scraped.ats_type,
+            "jd_text": scraped.jd_text,
+            "cosine_score": math_res.score,
+            "llm_score": ai_res.score,
+            "llm_reasoning": ai_res.reasoning,
+            "tailored_bullets": ai_res.tailored_bullets,
+            "tailored_resume_path": str(pdf_path) if pdf_path else None,
+            "cover_letter_path": str(cover_letter_path) if cover_letter_path else None,
+            "status": "PENDING_USER"
+        }
+        
+        job_id = None
+        existing = await db.client.table("jobs_found").select("id").eq("url_hash", url_hash).execute()
+        if existing.data:
+            job_id = existing.data[0]["id"]
+            await db.client.table("jobs_found").update(job_data).eq("id", job_id).execute()
+        else:
+            res = await db.client.table("jobs_found").insert(job_data).execute()
+            if res.data:
+                job_id = res.data[0]["id"]
+                
+        # 6. Send the rich notification
+        await status_msg.delete()
+        
+        # Check if platform is supported for auto-apply
+        # Greenhouse, Lever, Ashby are supported
+        ats_supported = scraped.ats_type in ["greenhouse", "lever", "ashby"]
+        
+        notification_data = {
+            "job_id": job_id,
+            "title": scraped.title,
+            "company": scraped.company,
+            "score": ai_res.score,
+            "reasoning": ai_res.reasoning,
+            "ats_type": scraped.ats_type,
+            "url": url,
+            "ats_supported": ats_supported
+        }
+        
+        await send_job_notification(
+            bot=message.bot,
+            job_data=notification_data,
+            pdf_path=pdf_path,
+            cover_letter_path=cover_letter_path
+        )
+        
+    except Exception as exc:
+        logger.exception("Manual job processing failed for %s", url)
+        await message.answer(f"❌ <b>Processing failed:</b> {exc}\n\nHere is your direct apply link: {url}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CALLBACK QUERY HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -613,7 +802,9 @@ async def send_job_notification(
     score = job_data.get("score", 0)
     reasoning = job_data.get("reasoning", "No AI notes available.")
     ats_type = job_data.get("ats_type", "Unknown")
-    ats_supported = job_data.get("ats_supported", True)
+    ats_supported = job_data.get("ats_supported")
+    if ats_supported is None:
+        ats_supported = ats_type in ["greenhouse", "lever", "ashby"]
 
     pdf_path = Path(pdf_path)
 

@@ -88,7 +88,12 @@ async def lifespan(app: FastAPI):
 
     # ── 6. Create pipeline orchestrator ────────────────────────
     async def notification_fn(job_data):
-        await send_job_notification(bot, job_data)
+        await send_job_notification(
+            bot,
+            job_data,
+            pdf_path=job_data.get("pdf_path"),
+            cover_letter_path=job_data.get("cover_letter_path"),
+        )
 
     orchestrator = PipelineOrchestrator(
         db=db,
@@ -125,14 +130,18 @@ async def lifespan(app: FastAPI):
     digest_gen = DigestGenerator(db=db)
 
     async def run_pipeline():
-        await orchestrator.run()
+        await orchestrator.release_and_sync()
 
     async def run_digest():
         await digest_gen.send_daily_digest(bot)
 
+    async def run_hourly_hunt():
+        await orchestrator.hourly_hunt()
+
     scheduler = setup_scheduler(
         pipeline_callback=run_pipeline,
         digest_callback=run_digest,
+        hourly_hunt_callback=run_hourly_hunt,
     )
     app.state.scheduler = scheduler
     logger.info(

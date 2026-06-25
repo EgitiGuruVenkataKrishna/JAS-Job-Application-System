@@ -524,3 +524,80 @@ class DatabaseClient:
         except Exception:
             logger.exception("clear_resume_embedding failed")
             raise
+
+    async def get_recent_jobs_embeddings(self, limit: int = 200) -> list[dict]:
+        """Fetch recent job postings that have valid embeddings.
+
+        Parameters
+        ----------
+        limit : int, default 200
+            Max number of records to retrieve.
+
+        Returns
+        -------
+        list[dict]
+            List of job records with `id` and `jd_embedding`.
+        """
+        try:
+            response = (
+                self.client
+                .table("jobs_found")
+                .select("id, jd_embedding")
+                .not_.is_("jd_embedding", "null")
+                .order("discovered_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            logger.exception("get_recent_jobs_embeddings failed")
+            return []
+
+    async def check_duplicate_by_embedding(self, embedding: list[float], threshold: float = 0.90) -> bool:
+        """Check if a new JD embedding matches an existing job by 90%+ similarity.
+
+        Parameters
+        ----------
+        embedding : list[float]
+            The 768-dim embedding of the new JD.
+        threshold : float, default 0.90
+            The cosine similarity threshold to trigger a duplicate match.
+
+        Returns
+        -------
+        bool
+            True if a duplicate exists, False otherwise.
+        """
+        if not embedding:
+            return False
+
+        from src.filtering.embedding_engine import EmbeddingEngine
+        recent_jobs = await self.get_recent_jobs_embeddings()
+
+        for job in recent_jobs:
+            job_emb = job.get("jd_embedding")
+            if not job_emb:
+                continue
+
+            # Handle potential string-representation array from postgres
+            if isinstance(job_emb, str):
+                try:
+                    import json
+                    job_emb = json.loads(job_emb)
+                except Exception:
+                    # Fallback parse e.g. '[0.123, -0.456, ...]'
+                    job_emb = [float(x) for x in job_emb.strip("[]").split(",") if x.strip()]
+
+            try:
+                similarity = EmbeddingEngine.cosine_similarity(embedding, job_emb)
+                if similarity >= threshold:
+                    logger.info(
+                        "Layer 3 Check: duplicate detected with similarity = %.4f (>= %.2f)",
+                        similarity,
+                        threshold,
+                    )
+                    return True
+            except Exception:
+                logger.exception("Failed to compute similarity for duplicate check")
+
+        return False

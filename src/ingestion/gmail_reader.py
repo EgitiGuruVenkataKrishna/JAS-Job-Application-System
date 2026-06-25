@@ -35,6 +35,10 @@ class RawJob:
 
     url: str
     platform: str
+    title: str
+    company: str
+    location: str
+    jd_text: str
     discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -42,6 +46,8 @@ class RawJob:
 _ALERT_SENDERS: list[str] = [
     "alerts@linkedin.com",
     "noreply@wellfound.com",
+    "noreply@indeed.com",
+    "alerts@indeed.com",
 ]
 
 # Exponential-backoff schedule (seconds).
@@ -121,16 +127,14 @@ class InboxInterceptor:
                         continue
 
                     parsed = email.message_from_bytes(raw_email)
-                    urls = self._extract_urls(parsed)
                     platform = self._platform_from_sender(sender)
-
-                    for url in urls:
-                        jobs.append(RawJob(url=url, platform=platform))
+                    extracted_jobs = self._extract_jobs(parsed, platform)
+                    jobs.extend(extracted_jobs)
 
                     # Mark email as READ.
                     conn.store(msg_id, "+FLAGS", "\\Seen")
 
-            logger.info("Inbox scan complete — discovered %d raw job URL(s).", len(jobs))
+            logger.info("Inbox scan complete — discovered %d raw job(s).", len(jobs))
         finally:
             try:
                 conn.close()
@@ -157,9 +161,9 @@ class InboxInterceptor:
         return data[0][1]  # type: ignore[index]
 
     @staticmethod
-    def _extract_urls(msg: Message) -> list[str]:
-        """Walk MIME parts, parse HTML bodies, and return unique job URLs."""
-        urls: list[str] = []
+    def _extract_jobs(msg: Message, platform: str) -> list[RawJob]:
+        """Walk MIME parts, parse HTML bodies, and return structured RawJob items."""
+        jobs: list[RawJob] = []
         seen: set[str] = set()
 
         for part in msg.walk():
@@ -175,21 +179,84 @@ class InboxInterceptor:
             html = payload.decode(charset, errors="replace")
             soup = BeautifulSoup(html, "html.parser")
 
-            # Extract href attributes from anchor tags.
             for anchor in soup.find_all("a", href=True):
                 href: str = anchor["href"]
                 if _is_job_url(href) and href not in seen:
                     seen.add(href)
-                    urls.append(href)
+                    
+                    # 1. Parse Title
+                    title = anchor.get_text(strip=True)
+                    if not title or len(title) < 5 or title.lower() in ("apply", "view", "view job", "apply now", "learn more"):
+                        parent = anchor.parent
+                        if parent:
+                            title = parent.get_text(strip=True)
+                    
+                    # 2. Parse Company
+                    company = "Unknown Company"
+                    parent = anchor.parent
+                    if parent:
+                        parent_text = parent.get_text(separator=" | ", strip=True)
+                        import re
+                        match = re.search(r"\bat\s+([^|]+)", parent_text, re.I)
+                        if match:
+                            company = match.group(1).strip()
+                        else:
+                            siblings = list(parent.next_siblings)
+                            for sib in siblings:
+                                sib_text = sib.get_text(strip=True) if hasattr(sib, "get_text") else str(sib).strip()
+                                if sib_text and len(sib_text) > 1:
+                                    company = sib_text
+                                    break
+                                    
+                    # 3. Parse Location
+                    location = "Remote"
+                    if parent:
+                        parent_text = parent.get_text(separator=" | ", strip=True)
+                        import re
+                        match = re.search(r"\b(in|at)\s+([^|]+)", parent_text, re.I)
+                        if match and match.group(2).strip().lower() not in company.lower():
+                            location = match.group(2).strip()
 
-        return urls
+                    # 4. Parse JD Snippet (brief description)
+                    jd_text = ""
+                    curr = anchor
+                    for _ in range(3):
+                        if curr.parent:
+                            curr = curr.parent
+                    
+                    if curr:
+                        full_block_text = curr.get_text(separator="\n", strip=True)
+                        lines = [line.strip() for line in full_block_text.split("\n") if line.strip()]
+                        jd_lines = []
+                        for line in lines:
+                            if line.lower() not in (title.lower(), company.lower(), location.lower()) and len(line) > 15:
+                                jd_lines.append(line)
+                        if jd_lines:
+                            jd_text = "\n".join(jd_lines[:3])
+
+                    if not jd_text:
+                        jd_text = f"Tech Internship at {company}. Check description online."
+
+                    jobs.append(RawJob(
+                        url=href,
+                        platform=platform,
+                        title=title,
+                        company=company,
+                        location=location,
+                        jd_text=jd_text,
+                    ))
+
+        return jobs
 
     @staticmethod
     def _platform_from_sender(sender: str) -> str:
         """Derive a platform label from the sender email address."""
-        if "linkedin" in sender:
+        sender_lower = sender.lower()
+        if "linkedin" in sender_lower:
             return "linkedin"
-        if "wellfound" in sender:
+        if "indeed" in sender_lower:
+            return "indeed"
+        if "wellfound" in sender_lower:
             return "wellfound"
         return "unknown"
 
