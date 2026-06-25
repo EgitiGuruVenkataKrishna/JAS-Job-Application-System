@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from supabase import create_client, Client
+from supabase import Client, create_client
 
 from src.config import get_settings
 
@@ -359,14 +359,14 @@ class DatabaseClient:
                 .select("platform, url")
                 .execute()
             )
-            
+
             platforms_count = {}
             domains = set()
             from urllib.parse import urlparse
             for row in (platforms_res.data or []):
                 plat = row.get("platform") or "unknown"
                 platforms_count[plat] = platforms_count.get(plat, 0) + 1
-                
+
                 url = row.get("url")
                 if url:
                     try:
@@ -391,7 +391,7 @@ class DatabaseClient:
                                 domain_counts[domain_clean] = domain_counts.get(domain_clean, 0) + 1
                     except Exception:
                         pass
-            
+
             sorted_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)
             top_domains = [d[0] for d in sorted_domains[:5]]
 
@@ -553,7 +553,9 @@ class DatabaseClient:
             logger.exception("get_recent_jobs_embeddings failed")
             return []
 
-    async def check_duplicate_by_embedding(self, embedding: list[float], threshold: float = 0.90) -> bool:
+    async def check_duplicate_by_embedding(
+        self, embedding: list[float], threshold: float = 0.90
+    ) -> bool:
         """Check if a new JD embedding matches an existing job by 90%+ similarity.
 
         Parameters

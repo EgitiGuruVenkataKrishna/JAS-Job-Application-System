@@ -6,27 +6,26 @@ FastAPI server with Telegram webhook, background scheduling, and pipeline orches
 
 from __future__ import annotations
 
-import logging
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from src.config import get_settings
 from src.api.routes import router
+from src.config import get_settings
 from src.db.client import DatabaseClient
+from src.documents.cover_letter_generator import CoverLetterGenerator
+from src.documents.generator import DocumentGenerator
+from src.filtering.ai_gate import AiGate
 from src.filtering.embedding_engine import EmbeddingEngine
 from src.filtering.math_gate import MathGate
-from src.filtering.ai_gate import AiGate
-from src.ingestion.gmail_reader import InboxInterceptor
 from src.ingestion.jd_scraper import JdScraper
 from src.ingestion.scheduler import setup_scheduler
-from src.documents.generator import DocumentGenerator
-from src.documents.cover_letter_generator import CoverLetterGenerator
-from src.telegram.bot import setup_bot
-from src.telegram.handlers import register_handlers, send_job_notification
-from src.telegram.digest import DigestGenerator
 from src.pipeline.orchestrator import PipelineOrchestrator
+from src.telegram.bot import setup_bot
+from src.telegram.digest import DigestGenerator
+from src.telegram.handlers import register_handlers, send_job_notification
 
 # Configure logging
 logging.basicConfig(
@@ -76,8 +75,6 @@ async def lifespan(app: FastAPI):
     cover_letter_gen = CoverLetterGenerator()
 
     # ── 4. Initialize ingestion ────────────────────────────────
-    logger.info("Initializing Gmail inbox interceptor...")
-    inbox = InboxInterceptor()
     scraper = JdScraper()
 
     # ── 5. Set up Telegram bot ─────────────────────────────────
@@ -97,7 +94,6 @@ async def lifespan(app: FastAPI):
 
     orchestrator = PipelineOrchestrator(
         db=db,
-        inbox=inbox,
         scraper=scraper,
         embedding_engine=embedding_engine,
         math_gate=math_gate,
@@ -116,13 +112,13 @@ async def lifespan(app: FastAPI):
     # In local development, we delete the webhook and start long-polling in the background.
     logger.info("Starting Telegram bot in polling mode for local development...")
     await bot.delete_webhook(drop_pending_updates=True)
-    
+
     async def start_polling():
         try:
             await dp.start_polling(bot)
         except Exception as e:
             logger.error(f"Telegram polling error: {e}")
-            
+
     polling_task = asyncio.create_task(start_polling())
     app.state.polling_task = polling_task
 

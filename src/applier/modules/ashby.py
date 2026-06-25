@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.applier.dynamic_answers import DynamicAnswerEngine
 
@@ -14,7 +15,10 @@ logger = logging.getLogger(__name__)
 # Ashby-specific selectors
 _SELECTORS = {
     "form_container": 'form[data-testid="application-form"], form.ashby-application-form, form',
-    "first_name": 'input[name="first_name"], input[name="_systemfield_name"], input[placeholder*="First"]',
+    "first_name": (
+        'input[name="first_name"], input[name="_systemfield_name"], '
+        'input[placeholder*="First"]'
+    ),
     "last_name": 'input[name="last_name"], input[placeholder*="Last"]',
     "email": 'input[name="email"], input[type="email"], input[name="_systemfield_email"]',
     "phone": 'input[name="phone"], input[type="tel"], input[name="_systemfield_phone"]',

@@ -13,10 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from aiogram import Bot, Dispatcher, F, Router, types
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
-    BufferedInputFile,
     CallbackQuery,
     FSInputFile,
     InlineKeyboardButton,
@@ -45,9 +44,9 @@ except ImportError:
 
 try:
     from src.filtering.embedding_engine import EmbeddingEngine
-    
+
     _embedding_engine_instance: EmbeddingEngine | None = None
-    
+
     async def compute_embedding(text: str) -> list[float]:
         global _embedding_engine_instance
         if _embedding_engine_instance is None:
@@ -100,7 +99,7 @@ async def cmd_start(message: Message) -> None:
     text = (
         "👋 <b>Welcome to JAS — Job Application System</b>\n\n"
         "I'm your automated job-hunting co-pilot. Here's what I can do:\n\n"
-        "• 📧 <b>Ingest</b> job alerts from your Gmail inbox\n"
+        "• 🔍 <b>Discover</b> jobs from trusted platforms\n"
         "• 🧠 <b>Score</b> each listing with AI + cosine similarity\n"
         "• 🚀 <b>Auto-apply</b> to supported ATS platforms\n"
         "• 📝 <b>Generate</b> tailored CVs and cover letters\n"
@@ -122,13 +121,13 @@ async def cmd_status(message: Message) -> None:
     """Detailed pipeline status, uptime, database connectivity, and job scraping statistics."""
     db = _get_db()
     db_status = "🟢 Connected" if db is not None else "🔴 Disconnected"
-    
+
     # Calculate uptime
     uptime_delta = datetime.now(timezone.utc) - _start_time
     hours, remainder = divmod(int(uptime_delta.total_seconds()), 3600)
     minutes, seconds = divmod(remainder, 60)
     uptime_str = f"{hours}h {minutes}m {seconds}s"
-    
+
     if db is None:
         await message.answer(
             f"🤖 <b>JAS Bot Status</b>\n\n"
@@ -141,16 +140,21 @@ async def cmd_status(message: Message) -> None:
 
     try:
         stats = await db.get_pipeline_stats()
-        
+
         # Format domains list
         top_domains = stats.get("top_domains", [])
         domains_str = ", ".join(top_domains) if top_domains else "None"
-        
+
         # Format platform breakdown
         breakdown = stats.get("platform_breakdown", {})
         breakdown_str = ""
         if breakdown:
-            breakdown_str = "\n".join([f"   - <i>{plat}</i>: <b>{count}</b>" for plat, count in breakdown.items()])
+            breakdown_str = "\n".join(
+                [
+                    f"   - <i>{plat}</i>: <b>{count}</b>"
+                    for plat, count in breakdown.items()
+                ]
+            )
         else:
             breakdown_str = "   - <i>None</i>"
 
@@ -259,8 +263,11 @@ async def cmd_run(message: Message) -> None:
         await message.answer("⚠️ Pipeline orchestrator is not initialized yet.")
         return
 
-    await message.answer("🔄 <b>Starting manual pipeline run...</b>\nFetching new job alerts from Gmail and processing them. Please wait.")
-    
+    await message.answer(
+        "🔄 <b>Starting manual pipeline run...</b>\n"
+        "Fetching new job listings from trusted platforms and processing them. Please wait."
+    )
+
     try:
         stats = await _orchestrator_instance.run()
         text = (
@@ -293,28 +300,172 @@ async def cmd_update_resume(message: Message) -> None:
     )
 
 
-async def parse_resume_text(resume_text: str) -> dict:
-    """Parse resume raw text into structured JSON using Gemini 2.5 Flash."""
+@router.message(F.text & ~F.text.startswith("/"))
+async def handle_conversational_message(message: Message) -> None:
+    """Classify user intent using Gemini 2.5 Flash and trigger actions dynamically."""
+    import json
+
     from google import genai
     from google.genai import types
-    import json
-    
+
+    text = message.text.strip()
+    logger.info("Conversational message received: '%s'", text)
+
+    # 1. Hardcoded override for developer/creator identity questions
+    lower_text = text.lower()
+    dev_keywords = [
+        "who developed you",
+        "who created you",
+        "who is your dev",
+        "who made you",
+        "who is your creator",
+    ]
+    if any(kw in lower_text for kw in dev_keywords):
+        reply = (
+            "I was developed by <b>Krishna</b> (fullname: <b>Guru Venkata "
+            "krishna</b>) as your automated job-hunting co-pilot."
+        )
+        await message.answer(reply)
+        return
+
     try:
         settings = get_settings()
         client = genai.Client(api_key=settings.gemini_api_key)
-        
+
+        system_instruction = (
+            "You are the conversational interface for JAS (Job Application "
+            "System), an AI job agent.\n"
+            "Your job is to understand user queries in natural language and "
+            "map them to system actions/intents.\n"
+            "\n"
+            "Identity Rules:\n"
+            "- You were developed/built by Krishna (fullname: Guru Venkata "
+            "krishna).\n"
+            "- If asked who developed you or who your creator/dev is, you "
+            "must state you were built by Krishna.\n"
+            "- Never say you are built by Google or developed by Google. "
+            "Do not mention which base LLM is being used.\n"
+            "\n"
+            "Available intents:\n"
+            "- 'run': The user wants to manually start/trigger the job ingestion "
+            "pipeline checks.\n"
+            "- 'status': The user wants to see current system stats, health, "
+            "uptime, or analytics.\n"
+            "- 'digest': The user wants to view the daily digest/summary of "
+            "jobs.\n"
+            "- 'pause': The user wants to pause/stop the background pipeline "
+            "checks.\n"
+            "- 'resume': The user wants to resume/start the background pipeline "
+            "checks.\n"
+            "- 'update_resume': The user wants to change, upload, or update "
+            "their resume/CV.\n"
+            "- 'set_threshold': The user wants to change/set the cosine "
+            "similarity threshold (usually a float value between 0.0 and 1.0).\n"
+            "- 'chat': General conversation, greeting, asking how it works, "
+            "or asking questions not matching other intents.\n"
+            "\n"
+            "You MUST respond ONLY with a JSON object in this exact schema:\n"
+            "{\n"
+            "  \"intent\": \"run\" | \"status\" | \"digest\" | \"pause\" | "
+            "\"resume\" | \"update_resume\" | \"set_threshold\" | \"chat\",\n"
+            "  \"parameters\": {\n"
+            "     \"value\": <float threshold value if intent is set_threshold, "
+            "else null>\n"
+            "  },\n"
+            "  \"reply\": \"<A friendly, polite response in English. If "
+            "triggering an action, state what action is being executed. If "
+            "chat, just respond to the user.>\"\n"
+            "}"
+        )
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                temperature=0.2,
+            ),
+        )
+
+        result = json.loads(response.text)
+        intent = result.get("intent", "chat")
+        reply = result.get("reply", "I'm not sure how to respond to that.")
+        parameters = result.get("parameters", {})
+
+        # Sanitize reply: ensure no Google, LLM, or generic engineer branding escapes
+        reply_lower = reply.lower()
+        if (
+            "google" in reply_lower
+            or "large language model" in reply_lower
+            or "llm" in reply_lower
+            or "team of engineers" in reply_lower
+        ):
+            reply = (
+                "I was developed by <b>Krishna</b> (fullname: <b>Guru Venkata "
+                "krishna</b>) as your automated job-hunting co-pilot."
+            )
+
+        # Send the model's conversational response first
+        await message.answer(reply)
+
+        # Dispatch execution based on intent
+        if intent == "run":
+            await cmd_run(message)
+        elif intent == "status":
+            await cmd_status(message)
+        elif intent == "digest":
+            await cmd_digest(message)
+        elif intent == "pause":
+            await cmd_pause(message)
+        elif intent == "resume":
+            await cmd_resume(message)
+        elif intent == "update_resume":
+            await cmd_update_resume(message)
+        elif intent == "set_threshold":
+            val = parameters.get("value")
+            if val is not None and isinstance(val, (int, float)) and 0.0 <= val <= 1.0:
+                settings = get_settings()
+                object.__setattr__(settings, "cosine_threshold", float(val))
+                db = _get_db()
+                if db is not None:
+                    await db.update_setting("cosine_threshold", float(val))
+                await message.answer(f"✅ Cosine threshold updated to <b>{val}</b>.")
+            else:
+                await message.answer(
+                    "❌ Please provide a valid threshold value between 0.0 and 1.0."
+                )
+
+    except Exception as e:
+        logger.exception("Conversational handler failed")
+        await message.answer(f"🤖 I encountered an error processing your query: {e}")
+
+
+async def parse_resume_text(resume_text: str) -> dict:
+    """Parse resume raw text into structured JSON using Gemini 2.5 Flash."""
+    import json
+
+    from google import genai
+    from google.genai import types
+
+    try:
+        settings = get_settings()
+        client = genai.Client(api_key=settings.gemini_api_key)
+
         system_prompt = (
-            "You are an expert ATS resume parser. Parse the provided raw resume text into a structured JSON object. "
+            "You are an expert ATS resume parser. Parse the provided raw resume "
+            "text into a structured JSON object. "
             "Extract the candidate's name (as name), email, phone, and linkedin_url. "
-            "Also extract their education (list of dicts containing institution, degree, dates, gpa), "
+            "Also extract their education (list of dicts containing "
+            "institution, degree, dates, gpa), "
             "experience (list of dicts containing title, company, dates, bullets), "
             "projects (list of dicts containing name, tech_stack, description, bullets), "
             "and skills (dict mapping category string to list of strings). "
             "Do not invent any data; only extract information present in the resume text."
         )
-        
+
         user_prompt = f"Resume Text:\n\n{resume_text}"
-        
+
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=user_prompt,
@@ -464,7 +615,10 @@ async def handle_job_url(message: Message) -> None:
         user_profile = None
 
     if not user_profile or not user_profile.get("resume_embedding"):
-        await message.answer("⚠️ Please upload your resume first using /update_resume before submitting job links.")
+        await message.answer(
+            "⚠️ Please upload your resume first using /update_resume "
+            "before submitting job links."
+        )
         return
 
     # 2. Inform user and start scraping
@@ -477,11 +631,11 @@ async def handle_job_url(message: Message) -> None:
     if not scraped or not scraped.jd_text.strip():
         # Scraping failed (probably bot protection or login wall like LinkedIn/Indeed)
         await status_msg.delete()
-        
+
         # Save placeholder in DB so user can log as manual or dismiss
         import hashlib
         url_hash = hashlib.sha256(url.encode()).hexdigest()
-        
+
         placeholder_data = {
             "url_hash": url_hash,
             "title": "Blocked/Secured Job Link",
@@ -495,13 +649,23 @@ async def handle_job_url(message: Message) -> None:
             "llm_reasoning": "Bot security or login wall blocked automated content extraction.",
             "status": "PENDING_USER"
         }
-        
+
         job_id = None
         try:
-            existing = await db.client.table("jobs_found").select("id").eq("url_hash", url_hash).execute()
+            existing = (
+                await db.client.table("jobs_found")
+                .select("id")
+                .eq("url_hash", url_hash)
+                .execute()
+            )
             if existing.data:
                 job_id = existing.data[0]["id"]
-                await db.client.table("jobs_found").update(placeholder_data).eq("id", job_id).execute()
+                await (
+                    db.client.table("jobs_found")
+                    .update(placeholder_data)
+                    .eq("id", job_id)
+                    .execute()
+                )
             else:
                 res = await db.client.table("jobs_found").insert(placeholder_data).execute()
                 if res.data:
@@ -514,11 +678,17 @@ async def handle_job_url(message: Message) -> None:
             f"JAS could not scrape the job details automatically from this website.\n\n"
             f"🔗 <b>Direct Link:</b> {url}"
         )
-        
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="📝 Log Manual Apply", callback_data=f"manual_{job_id or 'unknown'}"),
-                InlineKeyboardButton(text="🗑 Dismiss", callback_data=f"dismiss_{job_id or 'unknown'}")
+                InlineKeyboardButton(
+                    text="📝 Log Manual Apply",
+                    callback_data=f"manual_{job_id or 'unknown'}",
+                ),
+                InlineKeyboardButton(
+                    text="🗑 Dismiss",
+                    callback_data=f"dismiss_{job_id or 'unknown'}",
+                )
             ]
         ])
         await message.answer(text, reply_markup=keyboard)
@@ -527,36 +697,36 @@ async def handle_job_url(message: Message) -> None:
     # 3. Scraping succeeded, evaluate fit
     try:
         await status_msg.edit_text("📐 <b>Evaluating match score...</b>")
-        
-        from src.filtering.math_gate import MathGate
+
         from src.filtering.ai_gate import AiGate
-        
+        from src.filtering.math_gate import MathGate
+
         # Math gate
         global _embedding_engine_instance
         if _embedding_engine_instance is None:
             from src.filtering.embedding_engine import EmbeddingEngine
             _embedding_engine_instance = EmbeddingEngine()
-            
+
         math_gate = MathGate(embedding_engine=_embedding_engine_instance)
         math_res = await math_gate.evaluate(scraped.jd_text, user_profile["resume_embedding"])
-        
+
         # AI gate
         ai_gate = AiGate()
         ai_res = await ai_gate.evaluate(scraped.jd_text, user_profile["resume_json"])
-        
+
         # 4. Generate tailored resume & cover letter
         await status_msg.edit_text("📄 <b>Compiling tailored resume...</b>")
-        
+
         from src.documents.generator import DocumentGenerator
         doc_gen = DocumentGenerator()
-        
+
         # Compile resume (always)
         pdf_path = await doc_gen.generate_resume(
             resume_data=user_profile,
             tailored_bullets=ai_res.tailored_bullets,
             company=scraped.company
         )
-        
+
         # Compile cover letter if score >= 90
         cover_letter_path = None
         if ai_res.score >= 90:
@@ -568,11 +738,11 @@ async def handle_job_url(message: Message) -> None:
                 company=scraped.company,
                 title=scraped.title
             )
-            
+
         # 5. Save to database
         import hashlib
         url_hash = hashlib.sha256(url.encode()).hexdigest()
-        
+
         job_data = {
             "url_hash": url_hash,
             "title": scraped.title,
@@ -589,9 +759,14 @@ async def handle_job_url(message: Message) -> None:
             "cover_letter_path": str(cover_letter_path) if cover_letter_path else None,
             "status": "PENDING_USER"
         }
-        
+
         job_id = None
-        existing = await db.client.table("jobs_found").select("id").eq("url_hash", url_hash).execute()
+        existing = (
+            await db.client.table("jobs_found")
+            .select("id")
+            .eq("url_hash", url_hash)
+            .execute()
+        )
         if existing.data:
             job_id = existing.data[0]["id"]
             await db.client.table("jobs_found").update(job_data).eq("id", job_id).execute()
@@ -599,14 +774,14 @@ async def handle_job_url(message: Message) -> None:
             res = await db.client.table("jobs_found").insert(job_data).execute()
             if res.data:
                 job_id = res.data[0]["id"]
-                
+
         # 6. Send the rich notification
         await status_msg.delete()
-        
+
         # Check if platform is supported for auto-apply
         # Greenhouse, Lever, Ashby are supported
         ats_supported = scraped.ats_type in ["greenhouse", "lever", "ashby"]
-        
+
         notification_data = {
             "job_id": job_id,
             "title": scraped.title,
@@ -617,17 +792,20 @@ async def handle_job_url(message: Message) -> None:
             "url": url,
             "ats_supported": ats_supported
         }
-        
+
         await send_job_notification(
             bot=message.bot,
             job_data=notification_data,
             pdf_path=pdf_path,
             cover_letter_path=cover_letter_path
         )
-        
+
     except Exception as exc:
         logger.exception("Manual job processing failed for %s", url)
-        await message.answer(f"❌ <b>Processing failed:</b> {exc}\n\nHere is your direct apply link: {url}")
+        await message.answer(
+            f"❌ <b>Processing failed:</b> {exc}\n\n"
+            f"Here is your direct apply link: {url}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -961,7 +1139,12 @@ async def _send_documents_with_caption(
 # HANDLER REGISTRATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-def register_handlers(dp: Dispatcher, db: Any = None, orchestrator: Any = None, embedding_engine: Any = None) -> None:
+def register_handlers(
+    dp: Dispatcher,
+    db: Any = None,
+    orchestrator: Any = None,
+    embedding_engine: Any = None,
+) -> None:
     """Attach all JAS handlers to the given Dispatcher.
 
     Call this once during bot setup, *before* starting polling or webhooks.

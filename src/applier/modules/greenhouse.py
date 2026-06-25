@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.applier.dynamic_answers import DynamicAnswerEngine
 
@@ -18,8 +19,15 @@ _SELECTORS = {
     "email": "#email",
     "phone": "#phone",
     "linkedin": '[autocomplete="url"]',
-    "resume_input": 'input[type="file"][id*="resume"], input[type="file"][data-field*="resume"], form input[type="file"]',
-    "cover_letter_input": 'input[type="file"][id*="cover"], input[type="file"][data-field*="cover"]',
+    "resume_input": (
+        'input[type="file"][id*="resume"], '
+        'input[type="file"][data-field*="resume"], '
+        'form input[type="file"]'
+    ),
+    "cover_letter_input": (
+        'input[type="file"][id*="cover"], '
+        'input[type="file"][data-field*="cover"]'
+    ),
     "submit_button": 'button[type="submit"], #submit_app, input[type="submit"]',
 }
 
@@ -176,7 +184,11 @@ class GreenhouseModule:
                 if "sponsor" in combined:
                     await self._select_option(select_el, "No")
                     logger.debug("Selected 'No' for sponsorship dropdown")
-                elif "authorized" in combined or "authoris" in combined or "authorization" in combined:
+                elif (
+                    "authorized" in combined
+                    or "authoris" in combined
+                    or "authorization" in combined
+                ):
                     await self._select_option(select_el, "Yes")
                     logger.debug("Selected 'Yes' for work authorisation dropdown")
             except Exception:
@@ -206,7 +218,8 @@ class GreenhouseModule:
         """Find custom text fields and generate dynamic answers."""
         # Greenhouse custom questions are typically in fieldsets or divs with labels
         text_fields = await page.query_selector_all(
-            'textarea:not([id="first_name"]):not([id="last_name"]):not([id="email"]):not([id="phone"]), '
+            'textarea:not([id="first_name"]):not([id="last_name"])'
+            ':not([id="email"]):not([id="phone"]), '
             'input[type="text"][data-custom="true"], '
             'div.field textarea'
         )

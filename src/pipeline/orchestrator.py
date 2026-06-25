@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
 
 from src.config import get_settings
 from src.db.client import DatabaseClient
+from src.documents.cover_letter_generator import CoverLetterGenerator
+from src.documents.generator import DocumentGenerator
+from src.filtering.ai_gate import AiGate
 from src.filtering.embedding_engine import EmbeddingEngine
 from src.filtering.math_gate import MathGate
-from src.filtering.ai_gate import AiGate
-from src.ingestion.gmail_reader import InboxInterceptor
-from src.ingestion.jd_scraper import JdScraper
-from src.documents.generator import DocumentGenerator
-from src.documents.cover_letter_generator import CoverLetterGenerator
-from src.telegram.alerts import send_system_alert
-from src.ingestion.active_crawler import ActiveDiscoveryEngine
 from src.filtering.title_gate import passes_title_gate
+from src.ingestion.active_crawler import ActiveDiscoveryEngine
+from src.ingestion.jd_scraper import JdScraper
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +33,6 @@ class PipelineOrchestrator:
     def __init__(
         self,
         db: DatabaseClient,
-        inbox: InboxInterceptor,
         scraper: JdScraper,
         embedding_engine: EmbeddingEngine,
         math_gate: MathGate,
@@ -46,7 +42,6 @@ class PipelineOrchestrator:
         send_notification_fn=None,
     ):
         self.db = db
-        self.inbox = inbox
         self.scraper = scraper
         self.embedding_engine = embedding_engine
         self.math_gate = math_gate
@@ -133,7 +128,9 @@ class PipelineOrchestrator:
                     jd_embedding = await self.embedding_engine.get_embedding(jd_text)
 
                     # 3. Layer 3 Check (90% similarity filter)
-                    is_dup = await self.db.check_duplicate_by_embedding(jd_embedding, threshold=0.90)
+                    is_dup = await self.db.check_duplicate_by_embedding(
+                        jd_embedding, threshold=0.90
+                    )
                     if is_dup:
                         stats["duplicates_skipped"] += 1
                         logger.info(f"Duplicate 90%+ skipped: {raw_job.title} @ {raw_job.company}")
@@ -141,7 +138,7 @@ class PipelineOrchestrator:
 
                     # 4. Math Gate
                     math_result = await self.math_gate.evaluate(jd_text, resume_embedding)
-                    
+
                     job_data = {
                         "url_hash": hashlib.sha256(raw_job.url.encode()).hexdigest(),
                         "url": raw_job.url,
@@ -152,7 +149,11 @@ class PipelineOrchestrator:
                         "jd_text": jd_text,
                         "jd_embedding": jd_embedding,
                         "cosine_score": math_result.score,
-                        "ats_type": raw_job.platform if raw_job.platform in ["greenhouse", "lever", "ashby"] else "unknown"
+                        "ats_type": (
+                            raw_job.platform
+                            if raw_job.platform in ["greenhouse", "lever", "ashby"]
+                            else "unknown"
+                        )
                     }
 
                     if not math_result.passed:
@@ -214,35 +215,32 @@ class PipelineOrchestrator:
         """Release & Sync Workflow. Runs every 3 hours (Hour 3).
 
         1. Releases staged trusted jobs (status = 'new') to Telegram (Auto-Apply enabled).
-        2. Logs into Gmail to fetch LinkedIn/Indeed alerts.
-        3. Evaluates emailed JDs, tailors resumes, and sends alerts with direct Apply Link.
         """
         if self._paused:
-            logger.info("Pipeline is paused. Skipping release and sync.")
+            logger.info("Pipeline is paused. Skipping release.")
             return {"status": "paused", "jobs_processed": 0}
 
         stats = {
             "released_staged": 0,
-            "jobs_discovered_gmail": 0,
-            "duplicates_skipped": 0,
-            "filtered_math": 0,
-            "filtered_llm": 0,
-            "released_gmail": 0,
-            "cover_letters_generated": 0,
             "errors": 0,
         }
 
         # ── Step 1: Release Staged Trusted Jobs ───────────────────
         try:
             logger.info("═══ Step 1: Releasing Staged Trusted Jobs ═══")
-            db_res = await self.db.client.table("jobs_found").select("*").eq("status", "new").execute()
+            db_res = (
+                await self.db.client.table("jobs_found")
+                .select("*")
+                .eq("status", "new")
+                .execute()
+            )
             staged_jobs = db_res.data or []
-            
+
             for job in staged_jobs:
                 try:
                     job_id = job["id"]
                     await self.db.update_job_status(job_id, "PENDING_USER")
-                    
+
                     if self.send_notification:
                         notification_data = {
                             "job_id": job_id,
@@ -260,155 +258,32 @@ class PipelineOrchestrator:
                         await self.send_notification(notification_data)
                     stats["released_staged"] += 1
                 except Exception as e:
-                    logger.error(f"Failed to release staged job {job.get('id')}: {e}", exc_info=True)
+                    logger.error(
+                        f"Failed to release staged job {job.get('id')}: {e}",
+                        exc_info=True,
+                    )
                     stats["errors"] += 1
             logger.info(f"Released {stats['released_staged']} staged jobs.")
         except Exception as e:
             logger.error(f"Failed to fetch staged jobs: {e}", exc_info=True)
             stats["errors"] += 1
 
-        # ── Step 2: Gmail Sync & Release (Bot-Walled) ────────────
-        try:
-            logger.info("═══ Step 2: Syncing Gmail Alerts (LinkedIn/Indeed) ═══")
-            raw_jobs = await self.inbox.fetch_new_jobs()
-            stats["jobs_discovered_gmail"] = len(raw_jobs)
-
-            if not raw_jobs:
-                logger.info("No new job alerts found in Gmail.")
-                return stats
-
-            # Load user profile
-            user_profile = await self.db.get_user_profile()
-            if not user_profile or not user_profile.get("resume_embedding"):
-                logger.error("No user profile or embedding found.")
-                return stats
-
-            resume_embedding = user_profile["resume_embedding"]
-            resume_json = user_profile["resume_json"]
-
-            # Process Gmail alerts
-            for raw_job in raw_jobs:
-                try:
-                    # 1. Layer 1: Title Gate
-                    if not passes_title_gate(raw_job.title):
-                        continue
-
-                    # 2. Deduplication check
-                    url_hash = hashlib.sha256(raw_job.url.encode()).hexdigest()
-                    if await self.db.job_exists_by_hash(url_hash):
-                        stats["duplicates_skipped"] += 1
-                        continue
-
-                    # 3. Compute JD embedding
-                    jd_embedding = await self.embedding_engine.get_embedding(raw_job.jd_text)
-
-                    # 4. Layer 3 Check (90% similarity)
-                    is_dup = await self.db.check_duplicate_by_embedding(jd_embedding, threshold=0.90)
-                    if is_dup:
-                        stats["duplicates_skipped"] += 1
-                        continue
-
-                    # 5. Math Gate
-                    math_result = await self.math_gate.evaluate(raw_job.jd_text, resume_embedding)
-                    
-                    job_data = {
-                        "url_hash": url_hash,
-                        "url": raw_job.url,
-                        "title": raw_job.title,
-                        "company": raw_job.company,
-                        "location": raw_job.location,
-                        "platform": raw_job.platform,
-                        "jd_text": raw_job.jd_text,
-                        "jd_embedding": jd_embedding,
-                        "cosine_score": math_result.score,
-                        "ats_type": "unknown"
-                    }
-
-                    if not math_result.passed:
-                        job_data["status"] = "FILTERED_MATH"
-                        await self.db.insert_job(job_data)
-                        stats["filtered_math"] += 1
-                        continue
-
-                    # 6. Layer 2 AI Recruiter Gate
-                    ai_result = await self.ai_gate.evaluate(raw_job.jd_text, resume_json)
-                    job_data["llm_score"] = ai_res_score = ai_result.score
-                    job_data["llm_reasoning"] = ai_result.reasoning
-                    job_data["tailored_bullets"] = ai_result.tailored_bullets
-
-                    if not ai_result.eligible:
-                        job_data["status"] = "FILTERED_LLM"
-                        await self.db.insert_job(job_data)
-                        stats["filtered_llm"] += 1
-                        continue
-
-                    # 7. Compile tailored resume PDF
-                    pdf_path = await self.doc_generator.generate_resume(
-                        resume_data=resume_json,
-                        tailored_bullets=ai_result.tailored_bullets,
-                        company=raw_job.company or "Unknown"
-                    )
-                    job_data["tailored_resume_path"] = str(pdf_path) if pdf_path else None
-
-                    # 8. Compile Cover Letter if score >= 90
-                    cover_letter_path = None
-                    if ai_res_score >= self.settings.cover_letter_score_threshold:
-                        cover_letter_path = await self.cover_letter_gen.generate(
-                            jd_text=raw_job.jd_text,
-                            resume_json=resume_json,
-                            company=raw_job.company or "Unknown",
-                            title=raw_job.title or "Position"
-                        )
-                        if cover_letter_path:
-                            job_data["cover_letter_path"] = str(cover_letter_path)
-                            stats["cover_letters_generated"] += 1
-
-                    # Save directly as PENDING_USER and notify
-                    job_data["status"] = "PENDING_USER"
-                    job_id = await self.db.insert_job(job_data)
-
-                    if self.send_notification:
-                        notification_data = {
-                            "job_id": job_id,
-                            "title": raw_job.title,
-                            "company": raw_job.company,
-                            "location": raw_job.location,
-                            "score": ai_res_score,
-                            "reasoning": ai_result.reasoning,
-                            "ats_type": raw_job.platform,
-                            "url": raw_job.url,
-                            "pdf_path": str(pdf_path) if pdf_path else None,
-                            "cover_letter_path": str(cover_letter_path) if cover_letter_path else None,
-                            "ats_supported": False,
-                        }
-                        await self.send_notification(notification_data)
-                    stats["released_gmail"] += 1
-                    logger.info(f"Released Gmail job alert: {raw_job.title} @ {raw_job.company}")
-
-                except Exception as e:
-                    logger.error(f"Failed to process Gmail job alert {raw_job.url}: {e}", exc_info=True)
-                    stats["errors"] += 1
-
-        except Exception as e:
-            logger.error(f"Gmail sync failed: {e}", exc_info=True)
-            stats["errors"] += 1
-
         return stats
 
     async def run(self) -> dict:
-        """Execute a full manual pipeline cycle: hourly hunt followed by release and sync."""
+        """Execute a full manual pipeline cycle: hourly hunt followed by release."""
         hunt_stats = await self.hourly_hunt()
         release_stats = await self.release_and_sync()
-        
+
         # Merge stats
         merged = {
-            "jobs_discovered": hunt_stats.get("jobs_discovered", 0) + release_stats.get("jobs_discovered_gmail", 0),
+            "jobs_discovered": hunt_stats.get("jobs_discovered", 0),
             "jobs_scraped": hunt_stats.get("jobs_scraped", 0),
-            "duplicates_skipped": hunt_stats.get("duplicates_skipped", 0) + release_stats.get("duplicates_skipped", 0),
-            "filtered_math": hunt_stats.get("filtered_math", 0) + release_stats.get("filtered_math", 0),
-            "filtered_llm": hunt_stats.get("filtered_llm", 0) + release_stats.get("filtered_llm", 0),
-            "passed_to_user": release_stats.get("released_staged", 0) + release_stats.get("released_gmail", 0),
-            "cover_letters_generated": hunt_stats.get("cover_letters_generated", 0) + release_stats.get("cover_letters_generated", 0),
+            "duplicates_skipped": hunt_stats.get("duplicates_skipped", 0),
+            "filtered_math": hunt_stats.get("filtered_math", 0),
+            "filtered_llm": hunt_stats.get("filtered_llm", 0),
+            "passed_to_user": release_stats.get("released_staged", 0),
+            "cover_letters_generated": hunt_stats.get("cover_letters_generated", 0),
             "errors": hunt_stats.get("errors", 0) + release_stats.get("errors", 0),
         }
         return merged

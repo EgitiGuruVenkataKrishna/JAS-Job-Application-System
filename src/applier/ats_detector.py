@@ -23,7 +23,10 @@ class AtsType(enum.Enum):
 
 # URL pattern → AtsType mapping (checked in order)
 _URL_PATTERNS: list[tuple[re.Pattern[str], AtsType]] = [
-    (re.compile(r"boards\.greenhouse\.io|job-boards\.greenhouse\.io", re.IGNORECASE), AtsType.GREENHOUSE),
+    (
+        re.compile(r"boards\.greenhouse\.io|job-boards\.greenhouse\.io", re.IGNORECASE),
+        AtsType.GREENHOUSE,
+    ),
     (re.compile(r"jobs\.lever\.co", re.IGNORECASE), AtsType.LEVER),
     (re.compile(r"jobs\.ashbyhq\.com", re.IGNORECASE), AtsType.ASHBY),
     (re.compile(r"myworkdayjobs\.com|workday\.com", re.IGNORECASE), AtsType.WORKDAY),
@@ -73,7 +76,9 @@ class AtsDetector:
 
         # --- 2. DOM meta-tag inspection ---
         try:
-            meta_elements = await page.query_selector_all("meta[name], meta[property], meta[content]")
+            meta_elements = await page.query_selector_all(
+                "meta[name], meta[property], meta[content]"
+            )
             for meta in meta_elements:
                 content = await meta.get_attribute("content") or ""
                 for keyword, ats_type in _META_CONTENT_PATTERNS:

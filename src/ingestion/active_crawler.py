@@ -8,12 +8,22 @@ as a fallback for Glassdoor/Wellfound.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
+
 import httpx
 from bs4 import BeautifulSoup
 
-from src.ingestion.gmail_reader import RawJob
 from src.filtering.title_gate import passes_title_gate
+
+
+@dataclass
+class RawJob:
+    url: str
+    platform: str
+    title: str
+    company: str
+    location: str
+    jd_text: str
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +89,7 @@ class ActiveDiscoveryEngine:
                     job_url = f"https://www.workatastartup.com/jobs/{job_id}" if job_id else ""
                     location = hit.get("location", "Remote")
                     jd_text = hit.get("description", "") or hit.get("aboutRole", "")
-                    
+
                     if job_url and passes_title_gate(title):
                         jobs.append(RawJob(
                             url=job_url,
@@ -107,14 +117,14 @@ class ActiveDiscoveryEngine:
                     title_elem = container.select_one(".job-title-container a")
                     company_elem = container.select_one(".company-name")
                     location_elem = container.select_one(".location_names")
-                    
+
                     if title_elem and company_elem:
                         title = title_elem.get_text(strip=True)
                         company = company_elem.get_text(strip=True)
                         href = title_elem.get("href", "")
                         job_url = f"https://internshala.com{href}" if href.startswith("/") else href
                         location = location_elem.get_text(strip=True) if location_elem else "Remote"
-                        
+
                         if job_url and passes_title_gate(title):
                             jobs.append(RawJob(
                                 url=job_url,
@@ -142,7 +152,7 @@ class ActiveDiscoveryEngine:
                     title_full = item.find("title").text if item.find("title") else ""
                     link = item.find("link").text if item.find("link") else ""
                     description = item.find("description").text if item.find("description") else ""
-                    
+
                     if "hiring" in title_full.lower():
                         parts = title_full.split("hiring")
                         company = parts[0].strip()
@@ -150,7 +160,7 @@ class ActiveDiscoveryEngine:
                     else:
                         company = "HN Startup"
                         title = title_full
-                        
+
                     if link and passes_title_gate(title):
                         jobs.append(RawJob(
                             url=link,

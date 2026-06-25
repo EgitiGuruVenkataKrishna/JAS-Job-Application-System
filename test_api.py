@@ -1,6 +1,8 @@
 import asyncio
-from src.filtering.embedding_engine import EmbeddingEngine
+
 from src.config import get_settings
+from src.filtering.embedding_engine import EmbeddingEngine
+
 
 async def main():
     try:

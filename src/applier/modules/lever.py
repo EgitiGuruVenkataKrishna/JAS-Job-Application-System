@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.applier.dynamic_answers import DynamicAnswerEngine
 
@@ -18,7 +19,10 @@ _SELECTORS = {
     "email": 'input[name="email"], input[type="email"]',
     "phone": 'input[name="phone"], input[type="tel"]',
     "current_company": 'input[name="org"], input[name="currentCompany"]',
-    "linkedin": 'input[name="urls[LinkedIn]"], input[name="linkedin"], input[placeholder*="LinkedIn"]',
+    "linkedin": (
+        'input[name="urls[LinkedIn]"], input[name="linkedin"], '
+        'input[placeholder*="LinkedIn"]'
+    ),
     "website": 'input[name="urls[Portfolio]"], input[name="urls[Other]"]',
     "resume_input": 'input[type="file"][name="resume"], input[type="file"]',
     "submit_button": 'button[type="submit"], .postings-btn, button.application-submit',

@@ -6,7 +6,8 @@ import logging
 import re
 from pathlib import Path
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,9 @@ class GenericModule:
 
                 # Resolve value
                 if profile_key == "_full_name":
-                    value = f"{profile.get('first_name', '')} {profile.get('last_name', '')}".strip()
+                    fn = profile.get("first_name", "")
+                    ln = profile.get("last_name", "")
+                    value = f"{fn} {ln}".strip()
                 else:
                     value = profile.get(profile_key, "")
                 if not value:
@@ -132,7 +135,8 @@ class GenericModule:
         # 3. Next sibling input
         sibling = await label_el.evaluate_handle(
             "el => el.nextElementSibling && "
-            "(el.nextElementSibling.tagName === 'INPUT' || el.nextElementSibling.tagName === 'TEXTAREA') "
+            "(el.nextElementSibling.tagName === 'INPUT' || "
+            "el.nextElementSibling.tagName === 'TEXTAREA') "
             "? el.nextElementSibling : null"
         )
         element = sibling.as_element()

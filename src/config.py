@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,10 +17,6 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-
-    # --- Gmail IMAP ---
-    gmail_user: str
-    gmail_app_password: str
 
     # --- Google Gemini ---
     gemini_api_key: str
