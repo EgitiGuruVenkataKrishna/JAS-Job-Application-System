@@ -109,18 +109,22 @@ async def lifespan(app: FastAPI):
     logger.info("Telegram handlers registered.")
 
     # ── 8. Set up Telegram webhook / polling ────────────────────
-    # In local development, we delete the webhook and start long-polling in the background.
-    logger.info("Starting Telegram bot in polling mode for local development...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    if settings.telegram_webhook_url:
+        webhook_url = f"{settings.telegram_webhook_url.rstrip('/')}/webhook/telegram"
+        logger.info(f"Setting Telegram webhook to: {webhook_url}")
+        await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+    else:
+        logger.info("Starting Telegram bot in polling mode for local development...")
+        await bot.delete_webhook(drop_pending_updates=True)
 
-    async def start_polling():
-        try:
-            await dp.start_polling(bot)
-        except Exception as e:
-            logger.error(f"Telegram polling error: {e}")
+        async def start_polling():
+            try:
+                await dp.start_polling(bot)
+            except Exception as e:
+                logger.error(f"Telegram polling error: {e}")
 
-    polling_task = asyncio.create_task(start_polling())
-    app.state.polling_task = polling_task
+        polling_task = asyncio.create_task(start_polling())
+        app.state.polling_task = polling_task
 
     # ── 9. Start background scheduler ──────────────────────────
     digest_gen = DigestGenerator(db=db)
@@ -156,7 +160,8 @@ async def lifespan(app: FastAPI):
     # ── Shutdown ───────────────────────────────────────────────
     logger.info("JAS shutting down...")
     scheduler.shutdown(wait=False)
-    await dp.stop_polling()
+    if hasattr(app.state, "polling_task"):
+        await dp.stop_polling()
     await bot.session.close()
     logger.info("JAS shutdown complete.")
 
@@ -173,5 +178,9 @@ app.include_router(router)
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8080))
+    reload = os.environ.get("ENV", "production").lower() == "development"
+    uvicorn.run("src.main:app", host="0.0.0.0", port=port, reload=reload)

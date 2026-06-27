@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # --- Telegram ---
     telegram_bot_token: str
     telegram_chat_id: str
+    telegram_webhook_url: str | None = None
 
     # --- Supabase ---
     supabase_url: str
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     cover_letter_score_threshold: int = 90
 
     # --- Scheduling ---
-    ingestion_interval_hours: int = 3
+    ingestion_interval_hours: int = 4
     digest_hour: int = 8
 
     # --- Output Paths ---

@@ -48,11 +48,14 @@ COPY . .
 # Create output directories
 RUN mkdir -p output/resumes output/cover_letters output/screenshots
 
-# Expose port for FastAPI
-EXPOSE 8000
+# Expose port for FastAPI (default 8080 for Cloud Run)
+ENV PORT=8080
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
+    CMD python -c "import os, httpx; port = os.environ.get('PORT', '8080'); httpx.get(f'http://localhost:{port}/health').raise_for_status()" || exit 1
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run using shell execution to evaluate the dynamic $PORT environment variable at runtime
+CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT}"]
+

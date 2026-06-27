@@ -158,13 +158,32 @@ async def cmd_status(message: Message) -> None:
         else:
             breakdown_str = "   - <i>None</i>"
 
+        # Format last cycle analytics
+        last_cycle = stats.get("last_cycle", {})
+        last_cycle_str = "No recent search cycle data."
+        if last_cycle:
+            lc_platforms = last_cycle.get("new_postings_per_platform", {})
+            lc_platform_str = ", ".join([f"{p} ({c})" for p, c in lc_platforms.items()]) if lc_platforms else "None"
+
+            lc_scores = last_cycle.get("match_scores", [])
+            avg_score = sum(lc_scores) / len(lc_scores) if lc_scores else 0
+            scores_str = f"Avg: {avg_score:.1f}% ({len(lc_scores)} scored)" if lc_scores else "N/A"
+
+            last_cycle_str = (
+                f"• <b>New Postings:</b> {lc_platform_str}\n"
+                f"• <b>Tailored Resumes:</b> 📝 <b>{last_cycle.get('tailored_resumes_count', 0)}</b>\n"
+                f"• <b>Match Scores:</b> {scores_str}"
+            )
+
         text = (
             f"🤖 <b>JAS Bot Status & Analytics</b>\n\n"
             f"⚡ <b>System Health:</b>\n"
             f"• <b>Status:</b> 🟢 Online\n"
             f"• <b>Uptime:</b> {uptime_str}\n"
             f"• <b>Database:</b> {db_status}\n\n"
-            f"📊 <b>Job Pipeline Stats:</b>\n"
+            f"🔄 <b>Latest Search Cycle (Dashboard):</b>\n"
+            f"{last_cycle_str}\n\n"
+            f"📊 <b>Job Pipeline Stats (All-Time):</b>\n"
             f"• <b>Total Jobs Scanned:</b> <b>{stats.get('scanned', 0)}</b>\n"
             f"• <b>Applied (Auto):</b> 🟢 <b>{stats.get('applied_auto', 0)}</b>\n"
             f"• <b>Applied (Manual):</b> 🔵 <b>{stats.get('applied_manual', 0)}</b>\n"
@@ -253,6 +272,73 @@ async def cmd_resume(message: Message) -> None:
         _orchestrator_instance.resume()
     logger.info("Pipeline RESUMED by user %s", message.from_user)
     await message.answer("▶️ Pipeline <b>resumed</b>.")
+
+
+_last_search_time: datetime | None = None
+
+@router.message(Command("search"))
+@router.message(F.text.lower().contains("search"))
+async def cmd_search(message: Message, command: CommandObject = None) -> None:
+    """Trigger a systematic internship search across all 12 platforms."""
+    global _orchestrator_instance, _last_search_time
+    if _orchestrator_instance is None:
+        await message.answer("⚠️ Pipeline orchestrator is not initialized yet.")
+        return
+
+    from datetime import timedelta
+
+    # Check for force flag
+    is_force = False
+    if command is not None and command.args:
+        is_force = "force" in command.args.lower()
+    elif message.text:
+        is_force = "force" in message.text.lower()
+
+    # Enforce 4-hour cooldown unless forced
+    now = datetime.now(timezone.utc)
+    if _last_search_time is not None and not is_force:
+        elapsed = (now - _last_search_time).total_seconds()
+        if elapsed < 4 * 3600:
+            remaining = int((4 * 3600 - elapsed) / 60)
+            await message.answer(
+                f"⚠️ <b>Cooldown Active:</b> Searches are restricted to a 4-hour interval.\n"
+                f"⏳ Time remaining: <b>{remaining} minutes</b>.\n"
+                f"💡 Use <code>/search force</code> to bypass this safety limit."
+            )
+            return
+
+    await message.answer(
+        "🔍 <b>Systematic Search Initiated...</b>\n"
+        "Scanning all 12 platforms (Adzuna, Craigslist, Dice, Greenhouse, Lever, Naukri, "
+        "Remote.co, SimplyHired, SmartRecruiters, Talent.com, Workable, YcStartups) "
+        "prioritizing fresh internships.\n\n"
+        "<i>Please wait, compiling tailored CVs and cover letters...</i>"
+    )
+
+    try:
+        # Update last search time before running
+        _last_search_time = now
+
+        # Run orchestrator full cycle
+        stats = await _orchestrator_instance.run()
+
+        # Format the summary message
+        text = (
+            "✅ <b>Search Cycle Completed!</b>\n\n"
+            f"📥 Total Postings Scanned: <b>{stats.get('jobs_discovered', 0)}</b>\n"
+            f"⏭ Duplicates Skipped: <b>{stats.get('duplicates_skipped', 0)}</b>\n"
+            f"📐 Filtered by Title & Math Gates: <b>{stats.get('filtered_math', 0)}</b>\n"
+            f"🧠 Filtered by AI Recruiter: <b>{stats.get('filtered_llm', 0)}</b>\n"
+            f"📝 Tailored Resumes Compiled: <b>{stats.get('cover_letters_generated', 0) + stats.get('passed_to_user', 0)}</b>\n"
+            f"🚀 High-Match Jobs Released: <b>{stats.get('passed_to_user', 0)}</b>\n"
+            f"⚠️ Errors: <b>{stats.get('errors', 0)}</b>\n\n"
+            "💬 Check the matches above for customized CVs, cover letters, fit summaries, and direct apply links!"
+        )
+        await message.answer(text)
+
+    except Exception as e:
+        logger.exception("Search execution failed")
+        await message.answer(f"❌ <b>Search failed:</b> {e}")
 
 
 @router.message(Command("run"))

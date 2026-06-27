@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from supabase import Client, create_client
+from supabase import AsyncClient, acreate_client
 
 from src.config import get_settings
 
@@ -31,7 +31,7 @@ class DatabaseClient:
     """
 
     def __init__(self) -> None:
-        self._client: Client | None = None
+        self._client: AsyncClient | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -41,7 +41,7 @@ class DatabaseClient:
         """Create the Supabase client from env settings."""
         try:
             settings = get_settings()
-            self._client = create_client(
+            self._client = await acreate_client(
                 settings.supabase_url,
                 settings.supabase_service_key,
             )
@@ -51,7 +51,7 @@ class DatabaseClient:
             raise
 
     @property
-    def client(self) -> Client:
+    def client(self) -> AsyncClient:
         """Return the live Supabase client, raising if uninitialised."""
         if self._client is None:
             raise RuntimeError(
@@ -66,7 +66,7 @@ class DatabaseClient:
     async def job_exists_by_hash(self, url_hash: str) -> bool:
         """Return *True* if a job with the given URL hash already exists."""
         try:
-            response = (
+            response = await (
                 self.client
                 .table("jobs_found")
                 .select("id")
@@ -94,7 +94,7 @@ class DatabaseClient:
             The ``id`` (UUID) of the newly created row.
         """
         try:
-            response = (
+            response = await (
                 self.client
                 .table("jobs_found")
                 .insert(job_data)
@@ -126,7 +126,7 @@ class DatabaseClient:
         """
         try:
             payload: dict[str, Any] = {"status": status, **extras}
-            (
+            await (
                 self.client
                 .table("jobs_found")
                 .update(payload)
@@ -152,7 +152,7 @@ class DatabaseClient:
             The job dictionary if found, else None.
         """
         try:
-            response = (
+            response = await (
                 self.client
                 .table("jobs_found")
                 .select("*")
@@ -170,7 +170,7 @@ class DatabaseClient:
     async def get_pending_jobs(self) -> list[dict]:
         """Return jobs waiting for user action (status = 'PENDING_USER')."""
         try:
-            response = (
+            response = await (
                 self.client
                 .table("jobs_found")
                 .select("*")
@@ -207,7 +207,7 @@ class DatabaseClient:
             ).isoformat()
 
             # Total jobs scanned today
-            scanned_res = (
+            scanned_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -217,7 +217,7 @@ class DatabaseClient:
             scanned = scanned_res.count or 0
 
             # Failed math gate today
-            failed_math_res = (
+            failed_math_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -228,7 +228,7 @@ class DatabaseClient:
             failed_math = failed_math_res.count or 0
 
             # Failed AI gate today
-            failed_llm_res = (
+            failed_llm_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -239,7 +239,7 @@ class DatabaseClient:
             failed_llm = failed_llm_res.count or 0
 
             # Applied auto today
-            applied_auto_res = (
+            applied_auto_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -250,7 +250,7 @@ class DatabaseClient:
             applied_auto = applied_auto_res.count or 0
 
             # Applied manual today
-            applied_manual_res = (
+            applied_manual_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -261,7 +261,7 @@ class DatabaseClient:
             applied_manual = applied_manual_res.count or 0
 
             # Skipped today
-            skipped_res = (
+            skipped_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -304,7 +304,7 @@ class DatabaseClient:
         """
         try:
             # Scanned
-            scanned_res = (
+            scanned_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -313,7 +313,7 @@ class DatabaseClient:
             scanned = scanned_res.count or 0
 
             # Applied auto
-            applied_auto_res = (
+            applied_auto_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -323,7 +323,7 @@ class DatabaseClient:
             applied_auto = applied_auto_res.count or 0
 
             # Applied manual
-            applied_manual_res = (
+            applied_manual_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -333,7 +333,7 @@ class DatabaseClient:
             applied_manual = applied_manual_res.count or 0
 
             # Pending (PENDING_USER)
-            pending_res = (
+            pending_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -343,7 +343,7 @@ class DatabaseClient:
             pending = pending_res.count or 0
 
             # Skipped
-            skipped_res = (
+            skipped_res = await (
                 self.client
                 .table("jobs_found")
                 .select("id", count="exact")
@@ -352,18 +352,21 @@ class DatabaseClient:
             )
             skipped = skipped_res.count or 0
 
-            # Platforms and URLs for website stats
-            platforms_res = (
+            # Platforms, URLs, scores, and timestamps for stats
+            platforms_res = await (
                 self.client
                 .table("jobs_found")
-                .select("platform, url")
+                .select("platform, url, llm_score, tailored_resume_path, discovered_at")
                 .execute()
             )
 
             platforms_count = {}
             domains = set()
             from urllib.parse import urlparse
-            for row in (platforms_res.data or []):
+            from datetime import timedelta
+
+            rows = platforms_res.data or []
+            for row in rows:
                 plat = row.get("platform") or "unknown"
                 platforms_count[plat] = platforms_count.get(plat, 0) + 1
 
@@ -380,7 +383,7 @@ class DatabaseClient:
 
             # Sort domains to show top ones
             domain_counts = {}
-            for row in (platforms_res.data or []):
+            for row in rows:
                 url = row.get("url")
                 if url:
                     try:
@@ -395,6 +398,40 @@ class DatabaseClient:
             sorted_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)
             top_domains = [d[0] for d in sorted_domains[:5]]
 
+            # Last search cycle metrics (last 4 hours of jobs, or jobs from the most recent run)
+            parsed_rows = []
+            for r in rows:
+                disc_str = r.get("discovered_at")
+                disc_dt = None
+                if disc_str:
+                    try:
+                        disc_dt = datetime.fromisoformat(disc_str.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                parsed_rows.append((r, disc_dt))
+
+            valid_dts = [dt for _, dt in parsed_rows if dt is not None]
+            latest_dt = max(valid_dts) if valid_dts else datetime.now(timezone.utc)
+            # A search cycle is 4 hours, so we look back 4 hours from the latest job found
+            last_cycle_limit = latest_dt - timedelta(hours=4) if valid_dts else datetime.now(timezone.utc) - timedelta(hours=4)
+
+            last_cycle_jobs = []
+            for r, dt in parsed_rows:
+                if dt and dt >= last_cycle_limit:
+                    last_cycle_jobs.append(r)
+
+            last_cycle_platforms = {}
+            last_cycle_scores = []
+            last_cycle_resumes = 0
+            for job in last_cycle_jobs:
+                p = job.get("platform") or "unknown"
+                last_cycle_platforms[p] = last_cycle_platforms.get(p, 0) + 1
+                score = job.get("llm_score")
+                if score is not None:
+                    last_cycle_scores.append(int(score))
+                if job.get("tailored_resume_path"):
+                    last_cycle_resumes += 1
+
             return {
                 "scanned": scanned,
                 "applied_auto": applied_auto,
@@ -404,6 +441,12 @@ class DatabaseClient:
                 "unique_domains_count": len(domains),
                 "platform_breakdown": platforms_count,
                 "top_domains": top_domains,
+                "last_cycle": {
+                    "new_postings_per_platform": last_cycle_platforms,
+                    "match_scores": last_cycle_scores,
+                    "tailored_resumes_count": last_cycle_resumes,
+                    "timestamp": latest_dt.isoformat(),
+                }
             }
         except Exception:
             logger.exception("get_pipeline_stats failed")
@@ -416,7 +459,7 @@ class DatabaseClient:
     async def get_user_profile(self) -> dict | None:
         """Fetch the singleton user profile, or *None* if none exists."""
         try:
-            response = (
+            response = await (
                 self.client
                 .table("user_profile")
                 .select("*")
@@ -443,7 +486,7 @@ class DatabaseClient:
         try:
             existing = await self.get_user_profile()
             if existing:
-                (
+                await (
                     self.client
                     .table("user_profile")
                     .update(profile)
@@ -451,7 +494,7 @@ class DatabaseClient:
                     .execute()
                 )
             else:
-                (
+                await (
                     self.client
                     .table("user_profile")
                     .insert(profile)
@@ -487,7 +530,7 @@ class DatabaseClient:
                     {"resume_embedding": embedding}
                 )
             else:
-                (
+                await (
                     self.client
                     .table("user_profile")
                     .update({"resume_embedding": embedding})
@@ -510,7 +553,7 @@ class DatabaseClient:
                 logger.info("No profile to clear — skipping")
                 return
 
-            (
+            await (
                 self.client
                 .table("user_profile")
                 .update({
@@ -539,7 +582,7 @@ class DatabaseClient:
             List of job records with `id` and `jd_embedding`.
         """
         try:
-            response = (
+            response = await (
                 self.client
                 .table("jobs_found")
                 .select("id, jd_embedding")

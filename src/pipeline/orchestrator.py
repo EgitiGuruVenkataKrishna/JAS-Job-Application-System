@@ -172,9 +172,13 @@ class PipelineOrchestrator:
                         stats["filtered_llm"] += 1
                         continue
 
-                    # 6. Generate tailored resume PDF
+                    # 6. Enhance resume with tailored GitHub projects and generate PDF
+                    custom_resume_json = {**resume_json}
+                    if hasattr(ai_result, "tailored_projects") and ai_result.tailored_projects:
+                        custom_resume_json["projects"] = ai_result.tailored_projects
+
                     pdf_path = await self.doc_generator.generate_resume(
-                        resume_data=resume_json,
+                        resume_data=custom_resume_json,
                         tailored_bullets=ai_result.tailored_bullets,
                         company=raw_job.company or "Unknown"
                     )

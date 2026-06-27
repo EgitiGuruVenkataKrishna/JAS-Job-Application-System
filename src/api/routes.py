@@ -49,6 +49,26 @@ async def trigger_pipeline(request: Request):
     return {"status": "triggered", "message": "Pipeline run started in background."}
 
 
+@router.api_route("/trigger-scrape", methods=["GET", "POST"])
+async def trigger_scrape(request: Request):
+    """Manually trigger the scraping pipeline (designed for Cloud Scheduler).
+
+    This endpoint runs synchronously (awaiting the orchestrator) to prevent
+    Cloud Run from freezing CPU during execution.
+    """
+    orchestrator = request.app.state.orchestrator
+    if orchestrator.is_paused:
+        return {"status": "paused", "message": "Pipeline is paused. Use /resume on Telegram."}
+
+    logger.info("Scraping pipeline trigger received via /trigger-scrape.")
+
+    # Run the pipeline synchronously to keep CPU active on Cloud Run
+    stats = await orchestrator.run()
+
+    return {"status": "success", "stats": stats}
+
+
+
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
     """Receive Telegram updates via webhook.
